@@ -22,84 +22,74 @@ class MakeSweet(commands.Cog):
         self.lock = asyncio.Lock()
 
     async def generate_image(self, ctx, zip_template, user, gif_output):
-       
-        # If Heartlocked is used, create the text to be used as second image
-        if "heart-locket.zip" in zip_template:
-            text_image = self.create_text_image(f"    {user.display_name} \n   my beloved")
-            temp_text_dir = data_manager.cog_data_path(self) / "text_images"
-            temp_text_dir.mkdir(parents=True, exist_ok=True)  # Create the directory if it doesn't exist
+    # If Heartlocked is used, create the text to be used as second image
+    if "heart-locket.zip" in zip_template:
+        text_image = self.create_text_image(f"    {user.display_name} \n   my beloved")
+        temp_text_dir = data_manager.cog_data_path(self) / "text_images"
+        temp_text_dir.mkdir(parents=True, exist_ok=True)
+        temp_text_path = temp_text_dir / f"text_{user.id}.png"
+        text_image.save(temp_text_path, "PNG")
 
-            temp_text_path = temp_text_dir / f"text_{user.id}.png"
-            text_image.save(temp_text_path, "PNG")
+    # Handle avatar
+    temp_avatar_dir = data_manager.cog_data_path(self) / "avatars"
+    temp_avatar_dir.mkdir(parents=True, exist_ok=True)
+    temp_avatar_path = temp_avatar_dir / f'avatar_{user.id}.png'
 
-        if user.avatar.is_animated():
-            avatar_format = "gif"
-            # Create a temporary directory for the avatar frames
-            temp_avatar_dir = data_manager.cog_data_path(self) / "avatars"
-            temp_avatar_dir.mkdir(parents=True, exist_ok=True)  # Create the directory if it doesn't exist
+    # Save avatar
+    avatar_data = await user.avatar.read()
+    with open(temp_avatar_path, "wb") as temp_avatar:
+        temp_avatar.write(avatar_data)
 
-            temp_avatar_path = str(temp_avatar_dir / f'avatar_{user.id}.png')
+    if user.avatar.is_animated():
+        animated_avatar = Image.open(temp_avatar_path)
+        first_frame = animated_avatar.convert("RGBA").copy()
+        first_frame.save(temp_avatar_path)
 
-            avatar_data = await user.avatar.read()
-            with open(temp_avatar_path, "wb") as temp_avatar:
-                temp_avatar.write(avatar_data)
+    # Prepare input files based on template
+    input_files = []
+    if "heart-locket.zip" in zip_template:
+        input_files = [temp_avatar_path, temp_text_path]
+    elif "nesting-doll.zip" in zip_template:
+        input_files = [temp_avatar_path, temp_avatar_path, temp_avatar_path]
+    else:
+        input_files = [temp_avatar_path]
 
-            # Use PIL to open the animated avatar and extract the first frame as an image
-            animated_avatar = Image.open(temp_avatar_path)
-            first_frame = animated_avatar.convert("RGBA").copy()
+    # docker first, fall back to local if docker fails
+    try:
+        docker_command = [
+            "docker", "run", "--rm",
+            "-v", f"{data_manager.cog_data_path(self)}:/work",
+            "-v", f"{bundled_data_path(self)}:/templates",
+            "paulfitz/makesweet",
+            "--zip", f"/templates/templates/{os.path.basename(zip_template)}",
+            "--gif", f"/work/animations/{os.path.basename(gif_output)}"
+        ]
 
-            # Save the first frame as a static image (PNG)
-            first_frame_path = temp_avatar_dir / f'avatar_{user.id}.png'
-            first_frame.save(first_frame_path)
-            # Now, use the saved animated avatar with text for generating the animation
-            reanimator_command = [
-                f"{data_manager.bundled_data_path(self)}/reanimator",
-                "--zip", zip_template,
-                "--in", str(first_frame_path),  # Use the animated avatar with text
-                "--gif", str(gif_output)  # Convert the Path to a string
-            ]
-        else:
-            # For static avatars, use the original avatar data
-            avatar_format = "png"
-            user_id = str(user.id)
-            temp_avatar_dir = data_manager.cog_data_path(self) / "avatars"
-            temp_avatar_path = str(temp_avatar_dir / f'avatar_{user.id}.png')
-            avatar_data = await user.avatar.read()
-            with open(temp_avatar_path, "wb") as temp_avatar:
-                temp_avatar.write(avatar_data)
+        # Add input files to command
+        for input_file in input_files:
+            docker_command.extend(["--in", f"/work/{input_file.relative_to(data_manager.cog_data_path(self))}"])
 
+        result = subprocess.run(docker_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        return gif_output
+    except:
+        # Fall back to local reanimator if Docker fails
+        reanimator_command = [
+            f"{data_manager.bundled_data_path(self)}/reanimator",
+            "--zip", zip_template,
+            "--gif", str(gif_output)
+        ]
 
-        if "heart-locket.zip" in zip_template:
-            reanimator_command = [
-                f"{data_manager.bundled_data_path(self)}/reanimator",
-                "--zip", zip_template,
-                "--in", temp_avatar_path, temp_text_path,
-                "--gif", str(gif_output)  # Convert the Path to a string
-            ]
-        if "nesting-doll.zip" in zip_template:
-            reanimator_command = [
-                f"{data_manager.bundled_data_path(self)}/reanimator",
-                "--zip", zip_template,
-                "--in", temp_avatar_path, temp_avatar_path, temp_avatar_path,
-                "--gif", str(gif_output)  # Convert the Path to a string
-            ]
-        else:
-            reanimator_command = [
-                f"{data_manager.bundled_data_path(self)}/reanimator",
-                "--zip", zip_template,
-                "--in", temp_avatar_path,   
-                "--gif", str(gif_output)  # Convert the Path to a string
-            ]
-      
-      
+        # Add input files to command
+        for input_file in input_files:
+            reanimator_command.extend(["--in", str(input_file)])
+
         try:
             subprocess.run(reanimator_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            return gif_output
         except subprocess.CalledProcessError as e:
             error_message = e.stderr.decode('utf-8') if e.stderr is not None else "Unknown error"
             await ctx.send(f"Error: {error_message}")
             return None
-
-        return gif_output
 
 
 
